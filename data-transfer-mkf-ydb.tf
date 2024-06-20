@@ -1,40 +1,51 @@
-# Infrastructure for the Yandex Cloud YDB, Managed Service for Apache Kafka and Data Transfer.
+# Infrastructure for the Yandex Cloud YDB, Managed Service for Apache Kafka®, and Data Transfer
 #
-# RU: https://cloud.yandex.ru/docs/data-transfer/tutorials/data-transfer-mkf-ydb
-# EN: https://cloud.yandex.com/en/docs/data-transfer/tutorials/data-transfer-mkf-ydb
+# RU: https://yandex.cloud/ru/docs/data-transfer/tutorials/mkf-to-ydb
+# EN: https://yandex.cloud/en/docs/data-transfer/tutorials/mkf-to-ydb
 #
-# Set source cluster and target database settings.
+# Configure the parameters of the source and target clusters:
+
 locals {
-  # Source Managed Service for Apache Kafka cluster settings:
-  source_kf_version    = "" # Set Managed Service for Apache Kafka cluster version.
-  source_user_name     = "" # Set a username in the Managed Service for Apache Kafka cluster.
-  source_user_password = "" # Set a password for the user in the Managed Service for Apache Kafka cluster.
-  source_endpoint_id   = "" # Set the source endpoint id.
+  # Source Managed Service for Apache Kafka® cluster settings:
+  source_kf_version    = "" # Apache Kafka® cluster version
+  source_user_name     = "" # Username of the Apache Kafka® cluster
+  source_user_password = "" # Apache Kafka® user's password
 
   # Target YDB settings:
-  target_db_name     = "" # Set a YDB database name.
-  target_endpoint_id = "" # Set the target endpoint id.
+  target_db_name = "" # YDB database name
 
-  # Transfer settings:
-  transfer_enable = 0 # Set to 1 to enable Transfer.
+  # Specify these settings ONLY AFTER the clusters are created. Then run "terraform apply" command again.
+  # You should set up endpoints using the GUI to obtain their IDs
+  source_endpoint_id = "" # Set the source endpoint ID
+  target_endpoint_id = "" # Set the target endpoint ID
+  transfer_enabled   = 0  # Set to 1 to enable the transfer
+
+  # The following settings are predefined. Change them only if necessary.
+  network_name        = "network"                  # Name of the network
+  subnet_name         = "subnet-a"                 # Name of the subnet
+  source_cluster_name = "kafka-cluster"            # Name of the Apache Kafka® cluster
+  source_topic        = "sensors"                  # Name of the Apache Kafka® topic
+  transfer_name       = "transfer-from-mkf-to-ydb" # Name of the transfer from the Managed Service for Apache Kafka® to the YDB database
 }
+
+# Network infrastructure
 
 resource "yandex_vpc_network" "network" {
-  name        = "network"
-  description = "Network for the Managed Service for Apache Kafka® and ClickHouse clusters"
+  description = "Network for the Managed Service for Apache Kafka® cluster and the YDB database"
+  name        = local.network_name
 }
 
-# Subnet in ru-central1-a availability zone
 resource "yandex_vpc_subnet" "subnet-a" {
-  name           = "subnet-a"
+  description    = "Subnet in the ru-central1-a availability zone"
+  name           = local.subnet_name
   zone           = "ru-central1-a"
   network_id     = yandex_vpc_network.network.id
   v4_cidr_blocks = ["10.1.0.0/16"]
 }
 
-# Security group for the Managed Service for Apache Kafka® and ClickHouse clusters
 resource "yandex_vpc_default_security_group" "security-group" {
-  network_id = yandex_vpc_network.network.id
+  description = "Security group for the Managed Service for Apache Kafka® cluster and the YDB database"
+  network_id  = yandex_vpc_network.network.id
 
   ingress {
     protocol       = "TCP"
@@ -52,9 +63,11 @@ resource "yandex_vpc_default_security_group" "security-group" {
   }
 }
 
-# Managed Service for Apache Kafka® cluster
+# Infrastructure for the Managed Service for Apache Kafka® cluster
+
 resource "yandex_mdb_kafka_cluster" "kafka-cluster" {
-  name               = "kafka-cluster"
+  description        = "Managed Service for Apache Kafka® cluster"
+  name               = local.source_cluster_name
   environment        = "PRODUCTION"
   network_id         = yandex_vpc_network.network.id
   security_group_ids = [yandex_vpc_default_security_group.security-group.id]
@@ -73,36 +86,48 @@ resource "yandex_mdb_kafka_cluster" "kafka-cluster" {
     }
   }
 
-  user {
-    name     = local.source_user_name
-    password = local.source_user_password
-    permission {
-      topic_name = "sensors"
-      role       = "ACCESS_ROLE_CONSUMER"
-    }
-    permission {
-      topic_name = "sensors"
-      role       = "ACCESS_ROLE_PRODUCER"
-    }
-  }
+  depends_on = [
+    yandex_vpc_subnet.subnet-a
+  ]
 }
 
+# Topic of the Managed Service for Apache Kafka® cluster
 resource "yandex_mdb_kafka_topic" "sensors" {
   cluster_id         = yandex_mdb_kafka_cluster.kafka-cluster.id
-  name               = "sensors"
+  name               = local.source_topic
   partitions         = 4
   replication_factor = 1
 }
 
-resource "yandex_ydb_database_serverless" "ydb" {
-  name = local.target_db_name
+# User of the Managed Service for Apache Kafka® cluster
+resource "yandex_mdb_kafka_user" "mkf-user" {
+  cluster_id = yandex_mdb_kafka_cluster.kafka-cluster.id
+  name       = local.source_user_name
+  password   = local.source_user_password
+  permission {
+    topic_name = yandex_mdb_kafka_topic.sensors.name
+    role       = "ACCESS_ROLE_CONSUMER"
+  }
+  permission {
+    topic_name = yandex_mdb_kafka_topic.sensors.name
+    role       = "ACCESS_ROLE_PRODUCER"
+  }
 }
 
+# Infrastructure for the Yandex Database
+
+resource "yandex_ydb_database_serverless" "ydb" {
+  name = local.target_db_name
+  location_id = "ru-central1"
+}
+
+# Data Transfer infrastructure
+
 resource "yandex_datatransfer_transfer" "mkf-ydb-transfer" {
-  count       = local.transfer_enable
-  description = "Transfer from the Managed Service for Apache Kafka to the YDB database"
-  name        = "transfer-from-mkf-to-ydb"
+  description = "Transfer from the Managed Service for Apache Kafka® to the YDB database"
+  count       = local.transfer_enabled
+  name        = local.transfer_name
   source_id   = local.source_endpoint_id
   target_id   = local.target_endpoint_id
-  type        = "INCREMENT_ONLY" # Replication data from the source Data Stream.
+  type        = "INCREMENT_ONLY" # Replication data
 }
